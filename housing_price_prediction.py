@@ -1,604 +1,497 @@
 """
-Utrecht Housing Price Prediction - Data Science Project
+Utrecht Housing Price Prediction - Intro to Machine Learning Workshop
 
-This script implements a predictive model for housing prices in Utrecht using multiple regression techniques.
+Compares 5 ML algorithms on the Utrecht housing dataset:
+  1. Decision Tree
+  2. Naive Bayes
+  3. KNN (K-Nearest Neighbors)
+  4. Linear Regression
+  5. Random Forest
 
-Objectives:
-1. Implement a main predictive model
-2. Compare against 3 baseline models
-3. Demonstrate model improvement techniques
-4. Explain statistical significance of results
+Part A — Regression  (Linear, Decision Tree, KNN, Random Forest)
+Part B — Classification  (all 5 including Naive Bayes)
+Part C — Grand comparison dashboard
+
+All plots are saved to output_plots/.
 """
 
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy import stats
 import os
 import warnings
 
-# Machine Learning Libraries
-from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-
-# Models
-from sklearn.linear_model import LinearRegression, Ridge, Lasso
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.neighbors import KNeighborsRegressor
-
-# Statistical Testing
-from scipy.stats import f_oneway, ttest_rel
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import (
+    mean_squared_error, r2_score, mean_absolute_error,
+    accuracy_score, classification_report, confusion_matrix,
+    f1_score, precision_score, recall_score
+)
+from sklearn.linear_model import LinearRegression
+from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.neighbors import KNeighborsRegressor, KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
 
 warnings.filterwarnings('ignore')
-
-# Set display options
-pd.set_option('display.max_columns', None)
 sns.set_style('whitegrid')
 plt.rcParams['figure.figsize'] = (12, 6)
+plt.rcParams['figure.dpi'] = 150
 
-# Create output directory for plots
 os.makedirs('output_plots', exist_ok=True)
 
-print("="*80)
-print("UTRECHT HOUSING PRICE PREDICTION")
-print("="*80)
-print()
-
 # ============================================================================
-# 1. LOAD AND EXPLORE DATASET
+# 1. LOAD & EXPLORE
 # ============================================================================
-print("1. LOADING DATASET...")
-print("-" * 80)
+print("=" * 80)
+print("UTRECHT HOUSING — INTRO TO MACHINE LEARNING WORKSHOP")
+print("Comparing: Decision Tree | Naive Bayes | KNN | Linear | Random Forest")
+print("=" * 80)
 
 df = pd.read_csv('utrechthousingsmall.csv', encoding='utf-8-sig')
-
-print(f"Dataset Shape: {df.shape}")
-print(f"\nFirst few rows:")
-print(df.head())
-print(f"\n\nDataset Info:")
-df.info()
-print(f"\n\nBasic Statistics:")
-print(df.describe())
-
-# Check for missing values
-print(f"\n\nMissing Values:")
-missing = df.isnull().sum()
-if missing.sum() > 0:
-    print(missing[missing > 0])
-else:
-    print("No missing values found!")
-
-print(f"\nTotal missing values: {df.isnull().sum().sum()}")
+print(f"\nDataset shape: {df.shape}")
+print(f"Columns: {df.columns.tolist()}")
+print(df.describe().round(2))
 
 # ============================================================================
-# 2. EXPLORATORY DATA ANALYSIS (EDA)
+# 2. PREPROCESSING
 # ============================================================================
-print("\n" + "="*80)
-print("2. EXPLORATORY DATA ANALYSIS")
-print("-" * 80)
+print("\n" + "=" * 80)
+print("PREPROCESSING")
+print("=" * 80)
 
-# Distribution of target variable (retailvalue)
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+df_proc = df.drop('id', axis=1)
+df_proc['house_age'] = df_proc['buildyear'].max() - df_proc['buildyear'] + 1
+df_proc['lot_utilization'] = df_proc['house-area'] / df_proc['lot-area']
 
-axes[0].hist(df['retailvalue'], bins=30, edgecolor='black', alpha=0.7)
-axes[0].set_xlabel('Retail Value')
-axes[0].set_ylabel('Frequency')
-axes[0].set_title('Distribution of Housing Prices')
+# --- Targets ---
+y_reg = df_proc['retailvalue']
 
-axes[1].boxplot(df['retailvalue'])
-axes[1].set_ylabel('Retail Value')
-axes[1].set_title('Boxplot of Housing Prices')
+# Classification target: bin price into 3 categories
+price_labels = ['Low', 'Medium', 'High']
+df_proc['price_category'] = pd.qcut(y_reg, q=3, labels=price_labels)
+y_cls = LabelEncoder().fit_transform(df_proc['price_category'])
 
-plt.tight_layout()
-plt.savefig('output_plots/01_price_distribution.png', dpi=300, bbox_inches='tight')
-print("Saved: output_plots/01_price_distribution.png")
+feature_cols = [c for c in df_proc.columns
+                if c not in ['retailvalue', 'price_category', 'select']]
+X = df_proc[feature_cols]
 
-print(f"\nPrice Statistics:")
-print(f"Mean Price: ${df['retailvalue'].mean():,.2f}")
-print(f"Median Price: ${df['retailvalue'].median():,.2f}")
-print(f"Std Dev: ${df['retailvalue'].std():,.2f}")
+print(f"Features ({len(feature_cols)}): {feature_cols}")
+print(f"Regression target: retailvalue (continuous)")
+print(f"Classification target: price_category — {dict(zip(price_labels, np.bincount(y_cls)))}")
 
-# Correlation matrix
-plt.figure(figsize=(12, 10))
-correlation_matrix = df.corr(numeric_only=True)
-sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0, fmt='.2f')
-plt.title('Correlation Matrix of Features')
-plt.tight_layout()
-plt.savefig('output_plots/02_correlation_matrix.png', dpi=300, bbox_inches='tight')
-print("Saved: output_plots/02_correlation_matrix.png")
-
-print("\nCorrelation with retailvalue (sorted):")
-print(correlation_matrix['retailvalue'].sort_values(ascending=False))
-
-# Scatter plots of key features vs target
-key_features = ['house-area', 'lot-area', 'buildyear', 'bathrooms', 'taxvalue']
-fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-axes = axes.flatten()
-
-for idx, feature in enumerate(key_features):
-    if feature in df.columns:
-        axes[idx].scatter(df[feature], df['retailvalue'], alpha=0.5)
-        axes[idx].set_xlabel(feature)
-        axes[idx].set_ylabel('Retail Value')
-        axes[idx].set_title(f'{feature} vs Retail Value')
-
-# Hide the last subplot if not used
-if len(key_features) < 6:
-    axes[5].set_visible(False)
-
-plt.tight_layout()
-plt.savefig('output_plots/03_feature_relationships.png', dpi=300, bbox_inches='tight')
-print("Saved: output_plots/03_feature_relationships.png")
-
-# ============================================================================
-# 3. DATA PREPROCESSING AND FEATURE ENGINEERING
-# ============================================================================
-print("\n" + "="*80)
-print("3. DATA PREPROCESSING AND FEATURE ENGINEERING")
-print("-" * 80)
-
-# Create a copy for preprocessing
-df_processed = df.copy()
-
-# Drop id column (not useful for prediction)
-if 'id' in df_processed.columns:
-    df_processed = df_processed.drop('id', axis=1)
-
-# Feature Engineering: Create new features
-df_processed['house_age'] = 2024 - df_processed['buildyear']
-df_processed['price_per_sqm'] = df_processed['retailvalue'] / df_processed['house-area']
-df_processed['lot_utilization'] = df_processed['house-area'] / df_processed['lot-area']
-df_processed['has_garden'] = (df_processed['garden-size'] > 0).astype(int)
-
-print("New features created:")
-print("  - house_age: Age of the house (2024 - buildyear)")
-print("  - price_per_sqm: Price per square meter")
-print("  - lot_utilization: House area / lot area ratio")
-print("  - has_garden: Binary indicator for garden presence")
-
-print(f"\nProcessed dataset shape: {df_processed.shape}")
-
-# Prepare features and target
-X = df_processed.drop(['retailvalue', 'select'], axis=1, errors='ignore')
-y = df_processed['retailvalue']
-
-print(f"\nFeatures ({len(X.columns)}): {X.columns.tolist()}")
-print(f"Feature shape: {X.shape}")
-print(f"Target shape: {y.shape}")
-
-# Split the data (80% train, 20% test)
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
+X_train, X_test, y_reg_train, y_reg_test = train_test_split(
+    X, y_reg, test_size=0.2, random_state=42
+)
+_, _, y_cls_train, y_cls_test = train_test_split(
+    X, y_cls, test_size=0.2, random_state=42
 )
 
-print(f"\nTraining set size: {X_train.shape[0]} samples")
-print(f"Test set size: {X_test.shape[0]} samples")
-print(f"Train/Test split ratio: {X_train.shape[0]/X_test.shape[0]:.1f}:1")
-
-# Feature scaling
 scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
+X_train_sc = scaler.fit_transform(X_train)
+X_test_sc = scaler.transform(X_test)
 
-print(f"\nFeatures scaled using StandardScaler")
-print(f"Mean of scaled features: {X_train_scaled.mean():.6f}")
-print(f"Std of scaled features: {X_train_scaled.std():.6f}")
+print(f"\nTrain size: {X_train.shape[0]}  |  Test size: {X_test.shape[0]}")
 
 # ============================================================================
-# 4. BASELINE MODELS
+# PART A — REGRESSION (4 models — Naive Bayes cannot do regression)
 # ============================================================================
-print("\n" + "="*80)
-print("4. TRAINING BASELINE MODELS")
-print("-" * 80)
+print("\n" + "=" * 80)
+print("PART A: REGRESSION  (predicting exact housing price)")
+print("Note: Naive Bayes is classification-only, so 4 models are compared here.")
+print("=" * 80)
 
-models = {}
-results = {}
-
-# 1. Linear Regression (Baseline)
-print("\nTraining Linear Regression...")
-lr = LinearRegression()
-lr.fit(X_train_scaled, y_train)
-models['Linear Regression'] = lr
-
-# 2. Decision Tree Regressor
-print("Training Decision Tree...")
-dt = DecisionTreeRegressor(random_state=42)
-dt.fit(X_train_scaled, y_train)
-models['Decision Tree'] = dt
-
-# 3. K-Nearest Neighbors
-print("Training KNN...")
-knn = KNeighborsRegressor(n_neighbors=5)
-knn.fit(X_train_scaled, y_train)
-models['KNN'] = knn
-
-print("\nAll baseline models trained successfully!")
-
-# Evaluate all baseline models
-print("\n" + "="*80)
-print("BASELINE MODELS PERFORMANCE")
-print("="*80)
-
-for name, model in models.items():
-    # Predictions
-    y_pred_train = model.predict(X_train_scaled)
-    y_pred_test = model.predict(X_test_scaled)
-
-    # Metrics
-    train_r2 = r2_score(y_train, y_pred_train)
-    test_r2 = r2_score(y_test, y_pred_test)
-    test_rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
-    test_mae = mean_absolute_error(y_test, y_pred_test)
-
-    # Cross-validation score
-    cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=5, scoring='r2')
-
-    # Store results
-    results[name] = {
-        'train_r2': train_r2,
-        'test_r2': test_r2,
-        'test_rmse': test_rmse,
-        'test_mae': test_mae,
-        'cv_mean': cv_scores.mean(),
-        'cv_std': cv_scores.std(),
-        'predictions': y_pred_test
-    }
-
-    print(f"\n{name}:")
-    print(f"  Train R²: {train_r2:.4f}")
-    print(f"  Test R²:  {test_r2:.4f}")
-    print(f"  RMSE:     ${test_rmse:,.2f}")
-    print(f"  MAE:      ${test_mae:,.2f}")
-    print(f"  CV R² (mean ± std): {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
-
-print("\n" + "="*80)
-
-# ============================================================================
-# 5. MAIN MODEL: RANDOM FOREST WITH HYPERPARAMETER TUNING
-# ============================================================================
-print("\n" + "="*80)
-print("5. MAIN MODEL: RANDOM FOREST WITH HYPERPARAMETER TUNING")
-print("-" * 80)
-
-# Random Forest with default parameters first
-print("\nTraining Random Forest (default parameters)...")
-rf_default = RandomForestRegressor(random_state=42, n_jobs=-1)
-rf_default.fit(X_train_scaled, y_train)
-
-y_pred_rf_default = rf_default.predict(X_test_scaled)
-rf_default_r2 = r2_score(y_test, y_pred_rf_default)
-rf_default_rmse = np.sqrt(mean_squared_error(y_test, y_pred_rf_default))
-
-print(f"Random Forest (default) - Test R²: {rf_default_r2:.4f}")
-print(f"Random Forest (default) - RMSE: ${rf_default_rmse:,.2f}")
-
-# Hyperparameter tuning with GridSearchCV
-print("\nPerforming hyperparameter tuning with GridSearchCV...")
-
-param_grid = {
-    'n_estimators': [100, 200],
-    'max_depth': [10, 20, None],
-    'min_samples_split': [2, 5],
-    'min_samples_leaf': [1, 2]
+reg_models = {
+    'Linear Regression': LinearRegression(),
+    'Decision Tree':     DecisionTreeRegressor(random_state=42),
+    'KNN':               KNeighborsRegressor(n_neighbors=5),
+    'Random Forest':     RandomForestRegressor(n_estimators=100, random_state=42),
 }
 
-rf = RandomForestRegressor(random_state=42, n_jobs=-1)
-grid_search = GridSearchCV(
-    rf, param_grid, cv=5, scoring='r2', n_jobs=-1, verbose=0
-)
+reg_results = {}
+for name, model in reg_models.items():
+    model.fit(X_train_sc, y_reg_train)
+    y_pred = model.predict(X_test_sc)
+    cv = cross_val_score(model, X_train_sc, y_reg_train, cv=5, scoring='r2')
 
-grid_search.fit(X_train_scaled, y_train)
+    r2   = r2_score(y_reg_test, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_reg_test, y_pred))
+    mae  = mean_absolute_error(y_reg_test, y_pred)
 
-print(f"\nBest parameters: {grid_search.best_params_}")
-print(f"Best CV R² score: {grid_search.best_score_:.4f}")
+    reg_results[name] = dict(r2=r2, rmse=rmse, mae=mae,
+                             cv_mean=cv.mean(), cv_std=cv.std(), y_pred=y_pred)
+    print(f"\n  {name}")
+    print(f"    R²   = {r2:.4f}   RMSE = {rmse:,.0f}   MAE = {mae:,.0f}")
+    print(f"    CV R² = {cv.mean():.4f} +/- {cv.std():.4f}")
 
-# Use the best model
-rf_best = grid_search.best_estimator_
-
-# Evaluate the optimized model
-y_pred_rf_train = rf_best.predict(X_train_scaled)
-y_pred_rf_test = rf_best.predict(X_test_scaled)
-
-rf_train_r2 = r2_score(y_train, y_pred_rf_train)
-rf_test_r2 = r2_score(y_test, y_pred_rf_test)
-rf_test_rmse = np.sqrt(mean_squared_error(y_test, y_pred_rf_test))
-rf_test_mae = mean_absolute_error(y_test, y_pred_rf_test)
-
-# Cross-validation
-rf_cv_scores = cross_val_score(rf_best, X_train_scaled, y_train, cv=5, scoring='r2')
-
-# Store results
-results['Random Forest (Optimized)'] = {
-    'train_r2': rf_train_r2,
-    'test_r2': rf_test_r2,
-    'test_rmse': rf_test_rmse,
-    'test_mae': rf_test_mae,
-    'cv_mean': rf_cv_scores.mean(),
-    'cv_std': rf_cv_scores.std(),
-    'predictions': y_pred_rf_test
-}
-
-print("\n" + "="*80)
-print("MAIN MODEL: Random Forest (Optimized)")
-print("="*80)
-print(f"Train R²: {rf_train_r2:.4f}")
-print(f"Test R²:  {rf_test_r2:.4f}")
-print(f"RMSE:     ${rf_test_rmse:,.2f}")
-print(f"MAE:      ${rf_test_mae:,.2f}")
-print(f"CV R² (mean ± std): {rf_cv_scores.mean():.4f} ± {rf_cv_scores.std():.4f}")
-print("="*80)
-
-# Feature importance from Random Forest
-feature_importance = pd.DataFrame({
-    'feature': X.columns,
-    'importance': rf_best.feature_importances_
-}).sort_values('importance', ascending=False)
-
-print("\nFeature Importance:")
-print(feature_importance.to_string(index=False))
-
-# Plot feature importance
-plt.figure(figsize=(10, 6))
-plt.barh(feature_importance['feature'], feature_importance['importance'])
-plt.xlabel('Importance')
-plt.title('Feature Importance in Random Forest Model')
-plt.gca().invert_yaxis()
+# ---- Plot 1: Actual vs Predicted scatter for each regression model ----
+fig, axes = plt.subplots(1, 4, figsize=(22, 5))
+colors_reg = ['#3498db', '#e74c3c', '#f39c12', '#2ecc71']
+for ax, (name, res), col in zip(axes, reg_results.items(), colors_reg):
+    ax.scatter(y_reg_test, res['y_pred'], alpha=0.7, color=col,
+               edgecolors='k', linewidths=0.3, s=60)
+    lims = [min(y_reg_test.min(), res['y_pred'].min()),
+            max(y_reg_test.max(), res['y_pred'].max())]
+    ax.plot(lims, lims, 'r--', lw=2, label='Perfect prediction')
+    ax.set_xlabel('Actual Price')
+    ax.set_ylabel('Predicted Price')
+    ax.set_title(f"{name}\nR² = {res['r2']:.4f}  |  RMSE = {res['rmse']:,.0f}")
+    ax.legend(fontsize=7)
+    ax.grid(alpha=0.3)
+plt.suptitle('Regression: Actual vs Predicted', fontsize=14, y=1.02)
 plt.tight_layout()
-plt.savefig('output_plots/04_feature_importance.png', dpi=300, bbox_inches='tight')
-print("\nSaved: output_plots/04_feature_importance.png")
+plt.savefig('output_plots/01_regression_actual_vs_predicted.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("\nSaved: output_plots/01_regression_actual_vs_predicted.png")
 
-# ============================================================================
-# 6. MODEL COMPARISON
-# ============================================================================
-print("\n" + "="*80)
-print("6. MODEL COMPARISON")
-print("-" * 80)
+# ---- Plot 2: R² and RMSE bar comparison ----
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+rnames = list(reg_results.keys())
+r2s   = [reg_results[n]['r2'] for n in rnames]
+rmses = [reg_results[n]['rmse'] for n in rnames]
 
-# Create comparison dataframe
-comparison_df = pd.DataFrame({
-    'Model': list(results.keys()),
-    'Train R²': [results[m]['train_r2'] for m in results.keys()],
-    'Test R²': [results[m]['test_r2'] for m in results.keys()],
-    'RMSE': [results[m]['test_rmse'] for m in results.keys()],
-    'MAE': [results[m]['test_mae'] for m in results.keys()],
-    'CV R² Mean': [results[m]['cv_mean'] for m in results.keys()],
-    'CV R² Std': [results[m]['cv_std'] for m in results.keys()]
-}).sort_values('Test R²', ascending=False)
-
-print("\nMODEL COMPARISON:")
-print("="*100)
-print(comparison_df.to_string(index=False))
-print("="*100)
-
-# Visualize model comparison
-fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-
-# R² comparison
-x_pos = np.arange(len(comparison_df))
-axes[0].bar(x_pos - 0.2, comparison_df['Train R²'], 0.4, label='Train R²', alpha=0.8)
-axes[0].bar(x_pos + 0.2, comparison_df['Test R²'], 0.4, label='Test R²', alpha=0.8)
-axes[0].set_xticks(x_pos)
-axes[0].set_xticklabels(comparison_df['Model'], rotation=45, ha='right')
+bars1 = axes[0].bar(rnames, r2s, color=colors_reg, edgecolor='black', alpha=0.85)
 axes[0].set_ylabel('R² Score')
-axes[0].set_title('R² Score Comparison')
-axes[0].legend()
+axes[0].set_title('R² Score  (higher = better)')
+axes[0].set_ylim(0, max(r2s) * 1.25)
+for bar, val in zip(bars1, r2s):
+    axes[0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                 f'{val:.4f}', ha='center', fontweight='bold', fontsize=9)
 axes[0].grid(axis='y', alpha=0.3)
 
-# RMSE comparison
-axes[1].bar(comparison_df['Model'], comparison_df['RMSE'], alpha=0.8, color='coral')
-axes[1].set_xticklabels(comparison_df['Model'], rotation=45, ha='right')
-axes[1].set_ylabel('RMSE ($)')
-axes[1].set_title('RMSE Comparison (Lower is Better)')
+bars2 = axes[1].bar(rnames, rmses, color=colors_reg, edgecolor='black', alpha=0.85)
+axes[1].set_ylabel('RMSE')
+axes[1].set_title('RMSE  (lower = better)')
+for bar, val in zip(bars2, rmses):
+    axes[1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 500,
+                 f'{val:,.0f}', ha='center', fontweight='bold', fontsize=9)
 axes[1].grid(axis='y', alpha=0.3)
 
-# CV Score with error bars
-axes[2].bar(comparison_df['Model'], comparison_df['CV R² Mean'],
-           yerr=comparison_df['CV R² Std'], alpha=0.8, color='lightgreen',
-           capsize=5)
-axes[2].set_xticklabels(comparison_df['Model'], rotation=45, ha='right')
-axes[2].set_ylabel('CV R² Score')
-axes[2].set_title('Cross-Validation R² (with std dev)')
-axes[2].grid(axis='y', alpha=0.3)
-
+plt.suptitle('Regression Model Comparison', fontsize=14, y=1.02)
 plt.tight_layout()
-plt.savefig('output_plots/05_model_comparison.png', dpi=300, bbox_inches='tight')
-print("\nSaved: output_plots/05_model_comparison.png")
+plt.savefig('output_plots/02_regression_r2_rmse.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("Saved: output_plots/02_regression_r2_rmse.png")
 
-# ============================================================================
-# 7. STATISTICAL SIGNIFICANCE TESTING
-# ============================================================================
-print("\n" + "="*80)
-print("7. STATISTICAL SIGNIFICANCE TESTING")
-print("-" * 80)
-
-# Perform cross-validation for all models to get multiple samples
-print("\nPerforming 10-fold cross-validation for statistical testing...\n")
-
-cv_results = {}
-for name, model in models.items():
-    cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=10, scoring='r2')
-    cv_results[name] = cv_scores
-    print(f"{name}: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
-
-# Add Random Forest
-rf_cv = cross_val_score(rf_best, X_train_scaled, y_train, cv=10, scoring='r2')
-cv_results['Random Forest (Optimized)'] = rf_cv
-print(f"Random Forest (Optimized): {rf_cv.mean():.4f} ± {rf_cv.std():.4f}")
-
-# ANOVA test - compare all models
-print("\n" + "="*80)
-print("ANOVA TEST - Comparing all models")
-print("="*80)
-
-f_statistic, p_value = f_oneway(*cv_results.values())
-
-print(f"F-statistic: {f_statistic:.4f}")
-print(f"P-value: {p_value:.6f}")
-
-if p_value < 0.05:
-    print("\nConclusion: There is a statistically significant difference between models (p < 0.05)")
-    print("This means the performance differences we observe are unlikely due to random chance.")
-else:
-    print("\nConclusion: No statistically significant difference between models (p >= 0.05)")
-
-print("="*80)
-
-# Paired t-tests: Random Forest vs each baseline
-print("\n" + "="*80)
-print("PAIRED T-TESTS - Random Forest vs Baseline Models")
-print("="*80)
-
-rf_scores = cv_results['Random Forest (Optimized)']
-
-for model_name in ['Linear Regression', 'Decision Tree', 'KNN']:
-    baseline_scores = cv_results[model_name]
-
-    t_stat, p_val = ttest_rel(rf_scores, baseline_scores)
-
-    print(f"\nRandom Forest vs {model_name}:")
-    print(f"  T-statistic: {t_stat:.4f}")
-    print(f"  P-value: {p_val:.6f}")
-    print(f"  Mean difference: {(rf_scores.mean() - baseline_scores.mean()):.4f}")
-
-    if p_val < 0.05:
-        if t_stat > 0:
-            print(f"  Conclusion: Random Forest is significantly BETTER (p < 0.05)")
-        else:
-            print(f"  Conclusion: Random Forest is significantly WORSE (p < 0.05)")
-    else:
-        print(f"  Conclusion: No significant difference (p >= 0.05)")
-
-print("\n" + "="*80)
-
-# Confidence intervals for model performance
-print("\n" + "="*80)
-print("95% CONFIDENCE INTERVALS for R² Scores")
-print("="*80)
-
-for model_name, scores in cv_results.items():
-    mean = scores.mean()
-    std_err = scores.std() / np.sqrt(len(scores))
-    ci_lower = mean - 1.96 * std_err
-    ci_upper = mean + 1.96 * std_err
-
-    print(f"\n{model_name}:")
-    print(f"  Mean R²: {mean:.4f}")
-    print(f"  95% CI: [{ci_lower:.4f}, {ci_upper:.4f}]")
-
-print("\n" + "="*80)
-
-# ============================================================================
-# 8. MODEL PREDICTIONS VISUALIZATION
-# ============================================================================
-print("\n" + "="*80)
-print("8. PREDICTION VISUALIZATIONS")
-print("-" * 80)
-
-# Actual vs Predicted for Random Forest
-fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-# Scatter plot
-axes[0].scatter(y_test, y_pred_rf_test, alpha=0.6)
-axes[0].plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()],
-            'r--', lw=2, label='Perfect Prediction')
-axes[0].set_xlabel('Actual Price')
-axes[0].set_ylabel('Predicted Price')
-axes[0].set_title('Random Forest: Actual vs Predicted Prices')
-axes[0].legend()
-axes[0].grid(alpha=0.3)
-
-# Residuals plot
-residuals = y_test - y_pred_rf_test
-axes[1].scatter(y_pred_rf_test, residuals, alpha=0.6)
-axes[1].axhline(y=0, color='r', linestyle='--', lw=2)
-axes[1].set_xlabel('Predicted Price')
-axes[1].set_ylabel('Residuals')
-axes[1].set_title('Residuals Plot')
-axes[1].grid(alpha=0.3)
-
+# ---- Plot 3: Cross-validation boxplot (regression) ----
+fig, ax = plt.subplots(figsize=(10, 6))
+cv_data = []
+for name, model in reg_models.items():
+    cv_data.append(cross_val_score(model, X_train_sc, y_reg_train, cv=10, scoring='r2'))
+bp = ax.boxplot(cv_data, labels=rnames, patch_artist=True)
+for patch, col in zip(bp['boxes'], colors_reg):
+    patch.set_facecolor(col)
+    patch.set_alpha(0.7)
+ax.set_ylabel('R² Score')
+ax.set_title('Regression: 10-Fold Cross-Validation R²')
+ax.grid(axis='y', alpha=0.3)
 plt.tight_layout()
-plt.savefig('output_plots/06_actual_vs_predicted.png', dpi=300, bbox_inches='tight')
-print("Saved: output_plots/06_actual_vs_predicted.png")
+plt.savefig('output_plots/03_regression_cv_boxplot.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("Saved: output_plots/03_regression_cv_boxplot.png")
 
-# Residuals distribution
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+# ============================================================================
+# PART B — CLASSIFICATION (all 5 models head-to-head)
+# ============================================================================
+print("\n" + "=" * 80)
+print("PART B: CLASSIFICATION  (predicting price category: Low / Medium / High)")
+print("All 5 algorithms compared directly.")
+print("=" * 80)
 
-axes[0].hist(residuals, bins=30, edgecolor='black', alpha=0.7)
-axes[0].set_xlabel('Residuals')
-axes[0].set_ylabel('Frequency')
-axes[0].set_title('Distribution of Residuals')
-axes[0].axvline(x=0, color='r', linestyle='--', lw=2)
+cls_models = {
+    'Decision Tree':     DecisionTreeClassifier(random_state=42),
+    'Naive Bayes':       GaussianNB(),
+    'KNN':               KNeighborsClassifier(n_neighbors=5),
+    'Linear (Logistic)': __import__('sklearn.linear_model', fromlist=['LogisticRegression']).LogisticRegression(max_iter=1000, random_state=42),
+    'Random Forest':     RandomForestClassifier(n_estimators=100, random_state=42),
+}
 
-stats.probplot(residuals, dist="norm", plot=axes[1])
-axes[1].set_title('Q-Q Plot of Residuals')
+cls_results = {}
+for name, model in cls_models.items():
+    model.fit(X_train_sc, y_cls_train)
+    y_pred = model.predict(X_test_sc)
+    cv = cross_val_score(model, X_train_sc, y_cls_train, cv=5, scoring='accuracy')
 
+    acc = accuracy_score(y_cls_test, y_pred)
+    f1  = f1_score(y_cls_test, y_pred, average='weighted', zero_division=0)
+    prec = precision_score(y_cls_test, y_pred, average='weighted', zero_division=0)
+    rec  = recall_score(y_cls_test, y_pred, average='weighted', zero_division=0)
+
+    cls_results[name] = dict(
+        accuracy=acc, f1=f1, precision=prec, recall=rec,
+        cv_mean=cv.mean(), cv_std=cv.std(), y_pred=y_pred,
+        report=classification_report(y_cls_test, y_pred,
+                                     target_names=price_labels, zero_division=0)
+    )
+    print(f"\n  {name}")
+    print(f"    Accuracy  = {acc:.4f}   F1 = {f1:.4f}")
+    print(f"    Precision = {prec:.4f}   Recall = {rec:.4f}")
+    print(f"    CV Accuracy = {cv.mean():.4f} +/- {cv.std():.4f}")
+
+# ---- Plot 4: Confusion matrices for all 5 classifiers ----
+fig, axes = plt.subplots(1, 5, figsize=(26, 5))
+for ax, (name, res) in zip(axes, cls_results.items()):
+    cm = confusion_matrix(y_cls_test, res['y_pred'])
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax,
+                xticklabels=price_labels, yticklabels=price_labels)
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('Actual')
+    ax.set_title(f"{name}\nAcc = {res['accuracy']:.2%}", fontsize=10)
+plt.suptitle('Classification: Confusion Matrices', fontsize=14, y=1.02)
 plt.tight_layout()
-plt.savefig('output_plots/07_residuals_analysis.png', dpi=300, bbox_inches='tight')
-print("Saved: output_plots/07_residuals_analysis.png")
+plt.savefig('output_plots/04_classification_confusion_matrices.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("\nSaved: output_plots/04_classification_confusion_matrices.png")
 
-print(f"\nResidual Statistics:")
-print(f"Mean of residuals: ${residuals.mean():,.2f}")
-print(f"Std of residuals: ${residuals.std():,.2f}")
+# ---- Plot 5: Accuracy + F1 bar comparison ----
+fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+cnames = list(cls_results.keys())
+accs    = [cls_results[n]['accuracy'] for n in cnames]
+f1s     = [cls_results[n]['f1'] for n in cnames]
+colors5 = ['#e74c3c', '#9b59b6', '#f39c12', '#3498db', '#2ecc71']
+
+bars = axes[0].bar(cnames, accs, color=colors5, edgecolor='black', alpha=0.85)
+axes[0].set_ylabel('Accuracy')
+axes[0].set_title('Test Accuracy  (higher = better)')
+axes[0].set_ylim(0, 1.15)
+for bar, val in zip(bars, accs):
+    axes[0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                 f'{val:.4f}', ha='center', fontweight='bold', fontsize=9)
+axes[0].grid(axis='y', alpha=0.3)
+axes[0].tick_params(axis='x', rotation=15)
+
+bars = axes[1].bar(cnames, f1s, color=colors5, edgecolor='black', alpha=0.85)
+axes[1].set_ylabel('F1 Score (weighted)')
+axes[1].set_title('F1 Score  (higher = better)')
+axes[1].set_ylim(0, 1.15)
+for bar, val in zip(bars, f1s):
+    axes[1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                 f'{val:.4f}', ha='center', fontweight='bold', fontsize=9)
+axes[1].grid(axis='y', alpha=0.3)
+axes[1].tick_params(axis='x', rotation=15)
+
+plt.suptitle('Classification Model Comparison', fontsize=14, y=1.02)
+plt.tight_layout()
+plt.savefig('output_plots/05_classification_accuracy_f1.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("Saved: output_plots/05_classification_accuracy_f1.png")
+
+# ---- Plot 6: CV Accuracy with error bars ----
+fig, ax = plt.subplots(figsize=(10, 6))
+cv_means = [cls_results[n]['cv_mean'] for n in cnames]
+cv_stds  = [cls_results[n]['cv_std'] for n in cnames]
+bars = ax.bar(cnames, cv_means, yerr=cv_stds, color=colors5,
+              edgecolor='black', alpha=0.85, capsize=8)
+ax.set_ylabel('CV Accuracy')
+ax.set_title('5-Fold Cross-Validation Accuracy  (higher & more stable = better)')
+ax.set_ylim(0, 1.15)
+for bar, val, std in zip(bars, cv_means, cv_stds):
+    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + std + 0.03,
+            f'{val:.4f}', ha='center', fontweight='bold', fontsize=9)
+ax.grid(axis='y', alpha=0.3)
+ax.tick_params(axis='x', rotation=15)
+plt.tight_layout()
+plt.savefig('output_plots/06_classification_cv_accuracy.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("Saved: output_plots/06_classification_cv_accuracy.png")
+
+# ---- Plot 7: Classification CV boxplot ----
+fig, ax = plt.subplots(figsize=(10, 6))
+cv_cls_data = []
+for name, model in cls_models.items():
+    cv_cls_data.append(cross_val_score(model, X_train_sc, y_cls_train, cv=10, scoring='accuracy'))
+bp = ax.boxplot(cv_cls_data, labels=cnames, patch_artist=True)
+for patch, col in zip(bp['boxes'], colors5):
+    patch.set_facecolor(col)
+    patch.set_alpha(0.7)
+ax.set_ylabel('Accuracy')
+ax.set_title('Classification: 10-Fold Cross-Validation Accuracy')
+ax.grid(axis='y', alpha=0.3)
+ax.tick_params(axis='x', rotation=15)
+plt.tight_layout()
+plt.savefig('output_plots/07_classification_cv_boxplot.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("Saved: output_plots/07_classification_cv_boxplot.png")
+
+# ---- Plot 8: Precision / Recall / F1 grouped bar chart ----
+fig, ax = plt.subplots(figsize=(12, 6))
+x = np.arange(len(cnames))
+width = 0.25
+precs = [cls_results[n]['precision'] for n in cnames]
+recs  = [cls_results[n]['recall'] for n in cnames]
+
+ax.bar(x - width, precs, width, label='Precision', color='#3498db', edgecolor='black', alpha=0.85)
+ax.bar(x,         recs,  width, label='Recall',    color='#e74c3c', edgecolor='black', alpha=0.85)
+ax.bar(x + width, f1s,   width, label='F1 Score',  color='#2ecc71', edgecolor='black', alpha=0.85)
+
+for i in range(len(cnames)):
+    ax.text(x[i] - width, precs[i] + 0.02, f'{precs[i]:.2f}', ha='center', fontsize=8)
+    ax.text(x[i],         recs[i]  + 0.02, f'{recs[i]:.2f}',  ha='center', fontsize=8)
+    ax.text(x[i] + width, f1s[i]   + 0.02, f'{f1s[i]:.2f}',   ha='center', fontsize=8)
+
+ax.set_xticks(x)
+ax.set_xticklabels(cnames, rotation=15)
+ax.set_ylabel('Score')
+ax.set_title('Classification: Precision / Recall / F1 per Model')
+ax.set_ylim(0, 1.15)
+ax.legend()
+ax.grid(axis='y', alpha=0.3)
+plt.tight_layout()
+plt.savefig('output_plots/08_classification_precision_recall_f1.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("Saved: output_plots/08_classification_precision_recall_f1.png")
 
 # ============================================================================
-# 9. FINAL SUMMARY
+# PART C — GRAND COMPARISON DASHBOARD
 # ============================================================================
-print("\n" + "="*80)
-print("PROJECT SUMMARY")
-print("="*80)
+print("\n" + "=" * 80)
+print("GRAND COMPARISON — WHICH ALGORITHM IS BEST?")
+print("=" * 80)
 
-print("\n1. DATASET:")
-print(f"   - Total samples: {len(df)}")
-print(f"   - Features used: {len(X.columns)}")
-print(f"   - Target variable: retailvalue (housing prices)")
+# ---- Plot 9: Grand dashboard ----
+fig, axes = plt.subplots(2, 2, figsize=(18, 12))
 
-print("\n2. MODELS IMPLEMENTED:")
-for i, model_name in enumerate(results.keys(), 1):
-    print(f"   {i}. {model_name}")
+# Top-left: Regression R²
+ax = axes[0, 0]
+bars = ax.barh(rnames, r2s, color=colors_reg, edgecolor='black', alpha=0.85)
+for bar, val in zip(bars, r2s):
+    ax.text(val + 0.005, bar.get_y() + bar.get_height()/2,
+            f'{val:.4f}', va='center', fontweight='bold')
+ax.set_xlabel('R² Score')
+ax.set_title('REGRESSION: R² Score  (higher = better)')
+ax.set_xlim(0, max(r2s) * 1.2)
+ax.grid(axis='x', alpha=0.3)
 
-print("\n3. BEST MODEL:")
-best_model_name = comparison_df.iloc[0]['Model']
-best_r2 = comparison_df.iloc[0]['Test R²']
-best_rmse = comparison_df.iloc[0]['RMSE']
-print(f"   Model: {best_model_name}")
-print(f"   Test R²: {best_r2:.4f}")
-print(f"   RMSE: ${best_rmse:,.2f}")
-print(f"   This model explains {best_r2*100:.2f}% of the variance in housing prices")
+# Top-right: Regression RMSE
+ax = axes[0, 1]
+bars = ax.barh(rnames, rmses, color=colors_reg, edgecolor='black', alpha=0.85)
+for bar, val in zip(bars, rmses):
+    ax.text(val + 200, bar.get_y() + bar.get_height()/2,
+            f'{val:,.0f}', va='center', fontweight='bold')
+ax.set_xlabel('RMSE')
+ax.set_title('REGRESSION: RMSE  (lower = better)')
+ax.grid(axis='x', alpha=0.3)
 
-print("\n4. MODEL IMPROVEMENTS APPLIED:")
-print("   - Feature engineering (house_age, lot_utilization, price_per_sqm, has_garden)")
-print("   - Feature scaling (StandardScaler)")
-print("   - Hyperparameter tuning (GridSearchCV)")
-print("   - Cross-validation for robust evaluation (5-fold and 10-fold)")
+# Bottom-left: Classification Accuracy (all 5)
+ax = axes[1, 0]
+bars = ax.barh(cnames, accs, color=colors5, edgecolor='black', alpha=0.85)
+for bar, val in zip(bars, accs):
+    ax.text(val + 0.005, bar.get_y() + bar.get_height()/2,
+            f'{val:.4f}', va='center', fontweight='bold')
+ax.set_xlabel('Accuracy')
+ax.set_title('CLASSIFICATION: Accuracy  (higher = better)')
+ax.set_xlim(0, 1.15)
+ax.grid(axis='x', alpha=0.3)
 
-print("\n5. STATISTICAL SIGNIFICANCE:")
-print(f"   - ANOVA F-statistic: {f_statistic:.4f}")
-print(f"   - ANOVA p-value: {p_value:.6f}")
-if p_value < 0.05:
-    print("   - Models show statistically significant differences (p < 0.05)")
-    print("   - The performance differences are unlikely due to random chance")
-else:
-    print("   - No statistically significant differences between models")
+# Bottom-right: Classification F1 (all 5)
+ax = axes[1, 1]
+bars = ax.barh(cnames, f1s, color=colors5, edgecolor='black', alpha=0.85)
+for bar, val in zip(bars, f1s):
+    ax.text(val + 0.005, bar.get_y() + bar.get_height()/2,
+            f'{val:.4f}', va='center', fontweight='bold')
+ax.set_xlabel('F1 Score (weighted)')
+ax.set_title('CLASSIFICATION: F1 Score  (higher = better)')
+ax.set_xlim(0, 1.15)
+ax.grid(axis='x', alpha=0.3)
 
-print("\n6. TOP 5 IMPORTANT FEATURES:")
-for idx, row in feature_importance.head(5).iterrows():
-    print(f"   {idx+1}. {row['feature']}: {row['importance']:.4f}")
+plt.suptitle('ALGORITHM COMPARISON DASHBOARD', fontsize=16, fontweight='bold', y=1.01)
+plt.tight_layout()
+plt.savefig('output_plots/09_grand_comparison_dashboard.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("\nSaved: output_plots/09_grand_comparison_dashboard.png")
 
-print("\n7. OUTPUT FILES GENERATED:")
-print("   - output_plots/01_price_distribution.png")
-print("   - output_plots/02_correlation_matrix.png")
-print("   - output_plots/03_feature_relationships.png")
-print("   - output_plots/04_feature_importance.png")
-print("   - output_plots/05_model_comparison.png")
-print("   - output_plots/06_actual_vs_predicted.png")
-print("   - output_plots/07_residuals_analysis.png")
+# ---- Plot 10: Winner summary ----
+best_reg = max(reg_results, key=lambda n: reg_results[n]['r2'])
+best_cls = max(cls_results, key=lambda n: cls_results[n]['accuracy'])
+# tie-break on CV if accuracy is tied
+tied_cls = [n for n in cls_results if cls_results[n]['accuracy'] == cls_results[best_cls]['accuracy']]
+if len(tied_cls) > 1:
+    best_cls = max(tied_cls, key=lambda n: cls_results[n]['cv_mean'])
 
-print("\n" + "="*80)
-print("ANALYSIS COMPLETE!")
-print("="*80)
-print("\nAll results have been printed above and plots saved to 'output_plots/' directory.")
-print("You can use these results for your project submission.")
-print()
+fig, ax = plt.subplots(figsize=(14, 8))
+ax.axis('off')
+
+all_models = ['Decision Tree', 'Naive Bayes', 'KNN', 'Linear', 'Random Forest']
+
+summary_text = "FINAL RESULTS SUMMARY\n"
+summary_text += "=" * 60 + "\n\n"
+summary_text += "REGRESSION (predicting exact price)\n"
+summary_text += "-" * 60 + "\n"
+for n in rnames:
+    r = reg_results[n]
+    tag = "  << BEST" if n == best_reg else ""
+    summary_text += f"  {n:20s}  R²={r['r2']:.4f}  RMSE={r['rmse']:>8,.0f}{tag}\n"
+
+summary_text += "\nCLASSIFICATION (predicting Low/Medium/High)\n"
+summary_text += "-" * 60 + "\n"
+for n in cnames:
+    r = cls_results[n]
+    tag = "  << BEST" if n == best_cls else ""
+    summary_text += f"  {n:20s}  Acc={r['accuracy']:.4f}  F1={r['f1']:.4f}  CV={r['cv_mean']:.4f}{tag}\n"
+
+summary_text += "\n" + "=" * 60 + "\n"
+summary_text += f"  Best Regression model:      {best_reg}\n"
+summary_text += f"  Best Classification model:   {best_cls}\n"
+
+ax.text(0.05, 0.95, summary_text, transform=ax.transAxes,
+        fontsize=12, verticalalignment='top', fontfamily='monospace',
+        bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+plt.tight_layout()
+plt.savefig('output_plots/10_winner_summary.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("Saved: output_plots/10_winner_summary.png")
+
+# ============================================================================
+# PRINT FINAL VERDICT
+# ============================================================================
+print("\n" + "=" * 80)
+print("FINAL RESULTS")
+print("=" * 80)
+
+print("\n--- REGRESSION (predicting exact price) ---")
+print(f"  {'Model':20s}  {'R²':>8s}  {'RMSE':>10s}  {'MAE':>10s}")
+print("  " + "-" * 55)
+for n in rnames:
+    r = reg_results[n]
+    tag = " << BEST" if n == best_reg else ""
+    print(f"  {n:20s}  {r['r2']:8.4f}  {r['rmse']:>10,.0f}  {r['mae']:>10,.0f}{tag}")
+
+print("\n--- CLASSIFICATION (predicting Low / Medium / High price) ---")
+print(f"  {'Model':20s}  {'Acc':>8s}  {'F1':>8s}  {'CV Acc':>8s}")
+print("  " + "-" * 50)
+for n in cnames:
+    r = cls_results[n]
+    tag = " << BEST" if n == best_cls else ""
+    print(f"  {n:20s}  {r['accuracy']:8.4f}  {r['f1']:8.4f}  {r['cv_mean']:8.4f}{tag}")
+
+print(f"\nBest regression model:      {best_reg}")
+print(f"Best classification model:   {best_cls}")
+
+print("\n" + "=" * 80)
+print("KEY TAKEAWAY")
+print("=" * 80)
+print("""
+For this Utrecht housing dataset the task is predicting house prices.
+
+  REGRESSION (exact price):
+    - 4 of the 5 algorithms can do regression.
+    - Naive Bayes is classification-only and cannot predict exact prices.
+
+  CLASSIFICATION (Low / Medium / High price bucket):
+    - All 5 algorithms are compared head-to-head here.
+    - "Linear" uses Logistic Regression (the classification counterpart
+      of Linear Regression).
+
+Check the plots in output_plots/ for visual proof.
+""")
+
+print("OUTPUT FILES:")
+import glob as _glob
+for f in sorted(_glob.glob('output_plots/*.png')):
+    print(f"  {f}")
+
+print("\nDone!")
